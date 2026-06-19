@@ -16,42 +16,35 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---- 1. 配置 RDP ----
       - name: Configure Core RDP Settings
         shell: pwsh
         run: .github/workflows/scripts/win-configure-rdp.ps1
 
-      # ---- 2. 创建 RDP 用户 ----
       - name: Create RDP User
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: .github/workflows/scripts/win-create-user.ps1
 
-      # ---- 3. 调试：打印变量值（确认是否读取成功） ----
-      - name: Debug hostname variable
-        run: |
-          echo "RDP_HOSTNAME from vars: '${{ vars.RDP_HOSTNAME }}'"
-          echo "If this is empty, please set it in Settings -> Actions -> Variables."
-
-      # ---- 4. 连接 Tailscale（官方 Action） ----
+      # ---- 关键修复：通过 env 传入变量 ----
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           tags: tag:ci
-          hostname: ${{ vars.RDP_HOSTNAME }}
+          hostname: ${{ vars.RDP_HOSTNAME }}   # 确保这里使用 vars
 
-      # ---- 5. 获取 Tailscale 信息（IP 和 MagicDNS） ----
       - name: Retrieve Tailscale Info
         shell: pwsh
+        env:
+          RDP_HOSTNAME: ${{ vars.RDP_HOSTNAME }}   # 显式传入环境变量
         run: |
-          # 从变量读取固定主机名（注意：使用 vars 而非 secrets）
-          $fixedHostname = "${{ vars.RDP_HOSTNAME }}"
-          Write-Host "DEBUG: fixedHostname = '$fixedHostname'"
+          # 从环境变量读取，避免展开问题
+          $fixedHostname = $env:RDP_HOSTNAME
+          Write-Host "DEBUG: RDP_HOSTNAME from env = '$fixedHostname'"
           
-          if (-not $fixedHostname) {
-            Write-Host "WARNING: RDP_HOSTNAME is not set. Falling back to dynamic hostname."
+          if ([string]::IsNullOrEmpty($fixedHostname)) {
+            Write-Host "WARNING: RDP_HOSTNAME is empty. Falling back to dynamic hostname."
             $fixedHostname = "gh-runner-$env:GITHUB_RUN_ID"
           }
           
@@ -61,8 +54,8 @@ jobs:
           $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
           $tailnet = ($status | Select-String "tailnet").ToString().Split()[-1]
           if (-not $tailnet) {
-            Write-Host "ERROR: Could not parse tailnet from status. Using fallback."
-            $tailnet = "ghpc.tail58ee5c.ts.net"   # 🔴 如果你知道自己的 tailnet，替换这里
+            Write-Host "ERROR: Could not parse tailnet. Using fallback."
+            $tailnet = "your-tailnet.ts.net"   # 替换为你实际的 tailnet
           }
           
           $fullFQDN = "$fixedHostname.$tailnet"
@@ -71,12 +64,10 @@ jobs:
           Write-Host "Tailscale IP: $tsIP"
           Write-Host "MagicDNS Address: $fullFQDN"
 
-      # ---- 6. 验证 RDP ----
       - name: Verify RDP Accessibility
         shell: pwsh
         run: .github/workflows/scripts/win-verify-rdp.ps1
 
-      # ---- 7. 维持连接并打印访问信息 ----
       - name: Maintain Connection
         shell: pwsh
         run: |
