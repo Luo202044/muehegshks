@@ -3,6 +3,11 @@ name: Windows RDP Server
 on:
   workflow_dispatch:
 
+# 可选：防止并发冲突（同一时间只允许一个运行实例）
+concurrency:
+  group: rdp-session
+  cancel-in-progress: false
+
 jobs:
   secure-rdp:
     runs-on: windows-latest
@@ -19,7 +24,7 @@ jobs:
       - name: Create RDP User with Secure Password
         shell: pwsh
         env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}   # 从 GitHub Secret 读取
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: .github/workflows/scripts/win-create-user.ps1
 
       - name: Install Tailscale
@@ -30,6 +35,7 @@ jobs:
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          RDP_HOSTNAME: ${{ secrets.RDP_HOSTNAME }}    # 固定的主机名（不含域名后缀）
         run: .github/workflows/scripts/win-establish-ts.ps1
 
       - name: Verify RDP Accessibility
@@ -40,10 +46,11 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "MagicDNS Address: $env:TAILSCALE_HOSTNAME"
+          Write-Host "IP Fallback: $env:TAILSCALE_IP"
           Write-Host "Username: vum"
           Write-Host "Password: (configured via GitHub Secret, not displayed here)"
-          Write-Host "==================`n"
+          Write-Host "=========================`n"
           while ($true) {
             Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
             Start-Sleep -Seconds 300
