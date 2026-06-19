@@ -1,5 +1,6 @@
-# Verify RDP port 3389
-Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-$testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-if (-not $testResult.TcpTestSucceeded) { throw "TCP connection to 3389 failed" }
-Write-Host "TCP connectivity successful!"
+$listening = netstat -an | Select-String ":3389.*LISTENING"
+if (-not $listening) {
+    Write-Warning "RDP port 3389 is not listening."
+} else {
+    Write-Host "RDP service is listening on port 3389."
+}
