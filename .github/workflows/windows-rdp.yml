@@ -13,21 +13,28 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      # ---- 1. 配置 RDP ----
       - name: Configure Core RDP Settings
         shell: pwsh
         run: .github/workflows/scripts/win-configure-rdp.ps1
 
+      # ---- 2. 创建 RDP 用户 ----
       - name: Create RDP User
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: .github/workflows/scripts/win-create-user.ps1
 
-      - name: Debug - show hostname variable
-        run: echo "RDP_HOSTNAME is ${{ vars.RDP_HOSTNAME }}"
+      # ---- 3. 调试：打印变量值（确认是否读取成功） ----
+      - name: Debug hostname variable
+        run: |
+          echo "RDP_HOSTNAME from vars: '${{ vars.RDP_HOSTNAME }}'"
+          echo "If this is empty, please set it in Settings -> Actions -> Variables."
 
+      # ---- 4. 连接 Tailscale（官方 Action） ----
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
@@ -35,37 +42,51 @@ jobs:
           tags: tag:ci
           hostname: ${{ vars.RDP_HOSTNAME }}
 
+      # ---- 5. 获取 Tailscale 信息（IP 和 MagicDNS） ----
       - name: Retrieve Tailscale Info
         shell: pwsh
         run: |
+          # 从变量读取固定主机名（注意：使用 vars 而非 secrets）
           $fixedHostname = "${{ vars.RDP_HOSTNAME }}"
-          if (-not $fixedHostname) { throw "RDP_HOSTNAME not set" }
+          Write-Host "DEBUG: fixedHostname = '$fixedHostname'"
+          
+          if (-not $fixedHostname) {
+            Write-Host "WARNING: RDP_HOSTNAME is not set. Falling back to dynamic hostname."
+            $fixedHostname = "gh-runner-$env:GITHUB_RUN_ID"
+          }
           
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          if (-not $tsIP) { throw "No IP" }
+          if (-not $tsIP) { throw "Tailscale IP not assigned." }
           
-          $tailnet = (& "$env:ProgramFiles\Tailscale\tailscale.exe" status | Select-String "tailnet").ToString().Split()[-1]
-          if (-not $tailnet) { $tailnet = "your-tailnet.ts.net" }  # 替换为你实际的 tailnet
+          $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+          $tailnet = ($status | Select-String "tailnet").ToString().Split()[-1]
+          if (-not $tailnet) {
+            Write-Host "ERROR: Could not parse tailnet from status. Using fallback."
+            $tailnet = "ghpc.tail58ee5c.ts.net"   # 🔴 如果你知道自己的 tailnet，替换这里
+          }
           
+          $fullFQDN = "$fixedHostname.$tailnet"
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          echo "TAILSCALE_HOSTNAME=$fixedHostname.$tailnet" >> $env:GITHUB_ENV
-          Write-Host "IP: $tsIP"
-          Write-Host "FQDN: $fixedHostname.$tailnet"
+          echo "TAILSCALE_HOSTNAME=$fullFQDN" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $tsIP"
+          Write-Host "MagicDNS Address: $fullFQDN"
 
-      - name: Verify RDP
+      # ---- 6. 验证 RDP ----
+      - name: Verify RDP Accessibility
         shell: pwsh
         run: .github/workflows/scripts/win-verify-rdp.ps1
 
+      # ---- 7. 维持连接并打印访问信息 ----
       - name: Maintain Connection
         shell: pwsh
         run: |
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "MagicDNS: $env:TAILSCALE_HOSTNAME"
-          Write-Host "IP: $env:TAILSCALE_IP"
-          Write-Host "User: vum"
-          Write-Host "Password: (use Secret RDP_PASSWORD)"
-          Write-Host "========================="
+          Write-Host "MagicDNS Address: $env:TAILSCALE_HOSTNAME"
+          Write-Host "IP Fallback: $env:TAILSCALE_IP"
+          Write-Host "Username: vum"
+          Write-Host "Password: (configured via GitHub Secret, not displayed)"
+          Write-Host "=========================`n"
           while ($true) {
-            Write-Host "[$(Get-Date)] RDP Active"
+            Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
             Start-Sleep -Seconds 300
           }
