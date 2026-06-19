@@ -3,7 +3,7 @@ name: Windows RDP Server
 on:
   workflow_dispatch:
 
-# 可选：防止并发冲突（同一时间只允许一个运行实例）
+# 防止并发冲突：同一时间只允许一个 Runner 使用相同主机名
 concurrency:
   group: rdp-session
   cancel-in-progress: false
@@ -17,31 +17,47 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ---- 1. 配置 RDP 服务 ----
       - name: Configure Core RDP Settings
         shell: pwsh
         run: .github/workflows/scripts/win-configure-rdp.ps1
 
+      # ---- 2. 创建 RDP 用户（密码从 Secret 读取） ----
       - name: Create RDP User with Secure Password
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: .github/workflows/scripts/win-create-user.ps1
 
-      - name: Install Tailscale
-        shell: pwsh
-        run: .github/workflows/scripts/win-install-tailscale.ps1
+      # ---- 3. 使用官方 Action 连接 Tailscale（替代手动安装+连接脚本） ----
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          tags: tag:ci                    # 必须与 Auth Key 绑定的标签一致
+          hostname: ${{ vars.RDP_HOSTNAME }}  # 固定的主机名（从 Variables 读取）
+          # 可选：ping 目标验证连通性（忽略）
+          # ping: ${{ vars.RDP_HOSTNAME }}.${{ vars.TAILNET_NAME }}.ts.net
 
-      - name: Establish Tailscale Connection
+      # ---- 4. 获取 Tailscale 分配的 IP 和完整 MagicDNS 地址 ----
+      - name: Retrieve Tailscale Info
         shell: pwsh
-        env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          RDP_HOSTNAME: ${{ secrets.RDP_HOSTNAME }}    # 固定的主机名（不含域名后缀）
-        run: .github/workflows/scripts/win-establish-ts.ps1
+        run: |
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          if (-not $tsIP) { throw "Tailscale IP not assigned." }
+          $tailnet = & "$env:ProgramFiles\Tailscale\tailscale.exe" status | Select-String -Pattern "tailnet" | ForEach-Object { ($_ -split ' ')[-1] }
+          $fullFQDN = "${{ vars.RDP_HOSTNAME }}.$tailnet"
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          echo "TAILSCALE_HOSTNAME=$fullFQDN" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $tsIP"
+          Write-Host "MagicDNS Address: $fullFQDN"
 
+      # ---- 5. 验证 RDP 服务是否可访问 ----
       - name: Verify RDP Accessibility
         shell: pwsh
         run: .github/workflows/scripts/win-verify-rdp.ps1
 
+      # ---- 6. 维持连接并打印访问信息 ----
       - name: Maintain Connection
         shell: pwsh
         run: |
@@ -49,7 +65,7 @@ jobs:
           Write-Host "MagicDNS Address: $env:TAILSCALE_HOSTNAME"
           Write-Host "IP Fallback: $env:TAILSCALE_IP"
           Write-Host "Username: vum"
-          Write-Host "Password: (configured via GitHub Secret, not displayed here)"
+          Write-Host "Password: (configured via GitHub Secret, not displayed)"
           Write-Host "=========================`n"
           while ($true) {
             Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
