@@ -26,37 +26,51 @@ jobs:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: .github/workflows/scripts/win-create-user.ps1
 
-      # ---- 关键修复：通过 env 传入变量 ----
+      - name: Debug hostname variable
+        run: |
+          echo "RDP_HOSTNAME from vars: '${{ vars.RDP_HOSTNAME }}'"
+          echo "TAILNET_NAME from vars: '${{ vars.TAILNET_NAME }}'"
+
       - name: Connect to Tailscale
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
           tags: tag:ci
-          hostname: ${{ vars.RDP_HOSTNAME }}   # 确保这里使用 vars
+          hostname: ${{ vars.RDP_HOSTNAME }}
 
       - name: Retrieve Tailscale Info
         shell: pwsh
         env:
-          RDP_HOSTNAME: ${{ vars.RDP_HOSTNAME }}   # 显式传入环境变量
+          RDP_HOSTNAME_VAR: ${{ vars.RDP_HOSTNAME }}
+          TAILNET_NAME_VAR: ${{ vars.TAILNET_NAME }}
         run: |
-          # 从环境变量读取，避免展开问题
-          $fixedHostname = $env:RDP_HOSTNAME
-          Write-Host "DEBUG: RDP_HOSTNAME from env = '$fixedHostname'"
-          
-          if ([string]::IsNullOrEmpty($fixedHostname)) {
-            Write-Host "WARNING: RDP_HOSTNAME is empty. Falling back to dynamic hostname."
+          $fixedHostname = $env:RDP_HOSTNAME_VAR
+          if (-not $fixedHostname) {
+            Write-Host "WARNING: RDP_HOSTNAME not set, using dynamic fallback."
             $fixedHostname = "gh-runner-$env:GITHUB_RUN_ID"
           }
           
-          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-          if (-not $tsIP) { throw "Tailscale IP not assigned." }
-          
-          $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
-          $tailnet = ($status | Select-String "tailnet").ToString().Split()[-1]
+          $tailnet = $env:TAILNET_NAME_VAR
           if (-not $tailnet) {
-            Write-Host "ERROR: Could not parse tailnet. Using fallback."
-            $tailnet = "your-tailnet.ts.net"   # 替换为你实际的 tailnet
+            Write-Host "WARNING: TAILNET_NAME not set, attempting to parse from status."
+            $status = & "$env:ProgramFiles\Tailscale\tailscale.exe" status
+            # 尝试从状态中提取 tailnet（常见格式：第一行包含 "tailnet" 或域名）
+            $lines = $status -split "`n"
+            foreach ($line in $lines) {
+              if ($line -match "tailnet") {
+                $tailnet = ($line -split "\s+")[-1]
+                break
+              }
+            }
+            if (-not $tailnet) {
+              # 如果还没有，尝试从 "Logged out" 等消息中提取？或者硬编码默认
+              Write-Host "ERROR: Could not extract tailnet. Please set TAILNET_NAME variable."
+              throw "Tailnet name could not be determined."
+            }
           }
+          
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          if (-not $tsIP) { throw "No Tailscale IP assigned." }
           
           $fullFQDN = "$fixedHostname.$tailnet"
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
@@ -78,6 +92,6 @@ jobs:
           Write-Host "Password: (configured via GitHub Secret, not displayed)"
           Write-Host "=========================`n"
           while ($true) {
-            Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+            Write-Host "[$(Get-Date)] RDP Active"
             Start-Sleep -Seconds 300
           }
