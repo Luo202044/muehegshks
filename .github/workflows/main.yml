@@ -1,35 +1,29 @@
-name: Sharded Distributed Stress Test
+name: 15-Shard Server Load Test
 
 on:
   workflow_dispatch:
     inputs:
-      target_host:
-        description: '目标地址'
+      target_url:
+        description: '1. 目标 URL (例如: https://api.yourdomain.com)'
         required: true
         default: 'https://example.com'
-      users_per_shard:
-        description: '每个分片的并发用户数 (例如: 50)'
+      threads_per_shard:
+        description: '2. 每个分片的请求线程数 (总并发 = 线程数 × 15)'
         required: true
-        default: '50'
-      spawn_rate:
-        description: '每个分片的每秒启动数 (例如: 10)'
+        default: '100'
+      run_time_minutes:
+        description: '4. 请求时间 (单位: 分钟)'
         required: true
-        default: '10'
-      run_time:
-        description: '测试持续时间 (如 1m, 3m)'
-        required: true
-        default: '1m'
+        default: '5'
 
 jobs:
-  load-test-shard:
+  flood-attack:
     runs-on: ubuntu-latest
     strategy:
-      # fail-fast 设为 false，防止一个分片失败导致其他分片被强行中止
       fail-fast: false
       matrix:
-        # 定义分片ID。这里配置了4个分片，GitHub 会同时启动 4 台机器。
-        # 如果你输入 users_per_shard 为 50，则总并发为 4 * 50 = 200
-        shard_id: [1, 2, 3, 4]
+        # 3. 严格设置 15 个分片，GitHub 会同时启动 15 台虚拟机
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
     steps:
       - name: Checkout Repository
@@ -40,28 +34,18 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install Dependencies
-        run: |
-          pip install locust==2.32.2
+      - name: Install Locust
+        run: pip install locust==2.32.2
 
-      - name: Run Locust Shard ${{ matrix.shard_id }}
-        env:
-          # 将分片信息注入环境变量供 Python 脚本读取
-          SHARD_ID: ${{ matrix.shard_id }}
-          TOTAL_SHARDS: 4
+      - name: Fire Requests - Shard ${{ matrix.shard }}
         run: |
+          # 动态接收输入参数，构建施压命令
+          # -u: 线程数
+          # -r: 每秒启动的线程数 (直接设为与并发数相等，瞬间达到峰值)
+          # --run-time: 加上 'm' 后缀表示分钟
           locust -f locustfile.py \
             --headless \
-            -u ${{ github.event.inputs.users_per_shard }} \
-            -r ${{ github.event.inputs.spawn_rate }} \
-            --run-time ${{ github.event.inputs.run_time }} \
-            --host ${{ github.event.inputs.target_host }} \
-            --csv=shard_${{ matrix.shard_id }}_results
-
-      - name: Upload Shard Results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          # 每个分片的测试结果独立上传，防止互相覆盖
-          name: locust-results-shard-${{ matrix.shard_id }}
-          path: shard_${{ matrix.shard_id }}_results_*.csv
+            -u ${{ github.event.inputs.threads_per_shard }} \
+            -r ${{ github.event.inputs.threads_per_shard }} \
+            --run-time ${{ github.event.inputs.run_time_minutes }}m \
+            --host ${{ github.event.inputs.target_url }}
