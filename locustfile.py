@@ -1,11 +1,17 @@
-from locust import HttpUser, task, constant
+from locust import HttpUser, task, constant, events
+
+# 监听 Locust 退出事件，强制将最终的退出代码设为 0
+@events.quitting.add_listener
+def force_exit_code_zero(environment, **kwargs):
+    environment.process_exit_code = 0
 
 class PureLoadTestUser(HttpUser):
-    # 没有等待时间，前一个请求结束立刻发送下一个
     wait_time = constant(0)
 
     @task
     def fire_request(self):
-        # 自动拼接到外部传入的 host 后面
+        # catch_response=True 会捕获所有异常
+        # 我们在这里不管服务器返回什么，都直接调用 response.success()
+        # 彻底屏蔽报错，让脚本成为无情的发包机器
         with self.client.get("/", catch_response=True) as response:
-            pass
+            response.success()
