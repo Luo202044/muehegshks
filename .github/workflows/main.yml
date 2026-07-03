@@ -1,4 +1,4 @@
-name: 15-Shard Server Load Test
+name: Dynamic Sharded Server Load Test
 
 on:
   workflow_dispatch:
@@ -8,22 +8,41 @@ on:
         required: true
         default: 'https://example.com'
       threads_per_shard:
-        description: '2. 每个分片的请求线程数 (总并发 = 线程数 × 15)'
+        description: '2. 每个分片的请求线程数'
         required: true
         default: '100'
+      shard_count:
+        description: '3. 分片数量 (将启动对应数量的虚拟机)'
+        required: true
+        default: '15'
       run_time_minutes:
         description: '4. 请求时间 (单位: 分钟)'
         required: true
         default: '5'
 
 jobs:
+  # 任务一：根据输入的 shard_count 动态生成矩阵数组
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_array: ${{ steps.set-matrix.outputs.matrix_array }}
+    steps:
+      - id: set-matrix
+        run: |
+          SHARD_COUNT=${{ github.event.inputs.shard_count }}
+          # 使用 Python 生成类似 [1, 2, 3, ..., N] 的 JSON 数组
+          JSON_ARRAY=$(python3 -c "import json; print(json.dumps(list(range(1, $SHARD_COUNT + 1))))")
+          echo "matrix_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
+
+  # 任务二：读取矩阵，真正开始轰炸服务器
   flood-attack:
+    needs: generate-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 3. 严格设置 15 个分片，GitHub 会同时启动 15 台虚拟机
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        # 动态接收来自上一个任务的数组
+        shard: ${{ fromJson(needs.generate-matrix.outputs.matrix_array) }}
 
     steps:
       - name: Checkout Repository
@@ -39,10 +58,7 @@ jobs:
 
       - name: Fire Requests - Shard ${{ matrix.shard }}
         run: |
-          # 动态接收输入参数，构建施压命令
-          # -u: 线程数
-          # -r: 每秒启动的线程数 (直接设为与并发数相等，瞬间达到峰值)
-          # --run-time: 加上 'm' 后缀表示分钟
+          # 瞬间拉满线程数并持续指定分钟
           locust -f locustfile.py \
             --headless \
             -u ${{ github.event.inputs.threads_per_shard }} \
