@@ -1,4 +1,4 @@
-name: Dynamic Sharded Server Load Test
+name: Ultimate Go Load Test
 
 on:
   workflow_dispatch:
@@ -8,9 +8,9 @@ on:
         required: true
         default: 'https://example.com'
       threads_per_shard:
-        description: '2. 每个分片的请求线程数'
+        description: '2. 每个分片的并发 Goroutine 数'
         required: true
-        default: '100'
+        default: '200'
       shard_count:
         description: '3. 分片数量 (将启动对应数量的虚拟机)'
         required: true
@@ -21,7 +21,7 @@ on:
         default: '5'
 
 jobs:
-  # 任务一：根据输入的 shard_count 动态生成矩阵数组
+  # 任务一：动态生成矩阵数组 (逻辑不变)
   generate-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -30,38 +30,31 @@ jobs:
       - id: set-matrix
         run: |
           SHARD_COUNT=${{ github.event.inputs.shard_count }}
-          # 使用 Python 生成类似 [1, 2, 3, ..., N] 的 JSON 数组
           JSON_ARRAY=$(python3 -c "import json; print(json.dumps(list(range(1, $SHARD_COUNT + 1))))")
           echo "matrix_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
 
-  # 任务二：读取矩阵，真正开始轰炸服务器
+  # 任务二：运行 Go 语言洪流攻击
   flood-attack:
     needs: generate-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 动态接收来自上一个任务的数组
         shard: ${{ fromJson(needs.generate-matrix.outputs.matrix_array) }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          python-version: '3.10'
+          go-version: '1.21' # 使用现代 Go 版本
 
-      - name: Install Locust
-        run: pip install locust==2.32.2
-
-      - name: Fire Requests - Shard ${{ matrix.shard }}
+      - name: Fire Requests with Go - Shard ${{ matrix.shard }}
         run: |
-          # 瞬间拉满线程数并持续指定分钟
-          locust -f locustfile.py \
-            --headless \
-            -u ${{ github.event.inputs.threads_per_shard }} \
-            -r ${{ github.event.inputs.threads_per_shard }} \
-            --run-time ${{ github.event.inputs.run_time_minutes }}m \
-            --host ${{ github.event.inputs.target_url }}
+          # 直接运行 Go 脚本，传入 4 个自定义参数
+          go run main.go \
+            -url ${{ github.event.inputs.target_url }} \
+            -c ${{ github.event.inputs.threads_per_shard }} \
+            -t ${{ github.event.inputs.run_time_minutes }}
