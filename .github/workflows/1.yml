@@ -59,7 +59,7 @@ jobs:
       - name: Fire Requests - Shard ${{ matrix.shard }}
         run: |
           # 瞬间拉满线程数并持续指定分钟
-          locust -f locustfile.py \
+          locust -f 1.py \
             --headless \
             -u ${{ github.event.inputs.threads_per_shard }} \
             -r ${{ github.event.inputs.threads_per_shard }} \
