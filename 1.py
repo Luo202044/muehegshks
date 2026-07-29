@@ -10,10 +10,10 @@ except ImportError:
     psutil = None
 
 class PureSendUser(User):
-    # 没有等待时间，前一个请求结束立刻发送下一个
+    # 零延迟，上一个请求抛出即刻发送下一个
     wait_time = constant(0)
     
-    # 5 个不同的 User-Agent（用于 HTTP 纯发包或载荷伪装）
+    # 5 个不同的 User-Agent
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -24,7 +24,6 @@ class PureSendUser(User):
 
     stats_lock = threading.Lock()
     total_requests = 0
-    total_failures = 0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -43,16 +42,14 @@ class PureSendUser(User):
                 time.sleep(60)
                 with cls.stats_lock:
                     reqs = cls.total_requests
-                    fails = cls.total_failures
                     cls.total_requests = 0
-                    cls.total_failures = 0
 
                 cpu_percent = psutil.cpu_percent(interval=None) if psutil else 0.0
                 mem_info = process.memory_info().rss / (1024 * 1024) if process else 0.0
                 
-                print(f"\n[纯发包统计 - 每分钟汇报]")
-                print(f" -> 过去一分钟发包数: {reqs}, 异常数: {fails}")
-                print(f" -> 当前进程 CPU: {cpu_percent}% | 内存: {mem_info:.2f} MB\n")
+                print(f"\n[控制台自定统计 - 每分钟汇报]")
+                print(f" -> 过去一分钟发包动作数: {reqs}")
+                print(f" -> 当前机器 CPU 占用: {cpu_percent}% | 内存占用: {mem_info:.2f} MB\n", flush=True)
 
         t = threading.Thread(target=monitor, daemon=True)
         t.start()
@@ -73,44 +70,56 @@ class PureSendUser(User):
         elif self.protocol == "udp":
             self._fire_udp()
 
-    def _record(self, success: bool):
+    def _record(self, proto: str, name: str, start_time: float, length: int):
+        elapsed = (time.time() - start_time) * 1000
+        # 主动触发 Locust 内置事件，让面板和表格不再显示 0
+        events.request.fire(
+            request_type=proto,
+            name=name,
+            response_time=elapsed,
+            response_length=length,
+            exception=None
+        )
         with PureSendUser.stats_lock:
             PureSendUser.total_requests += 1
-            if not success:
-                PureSendUser.total_failures += 1
 
     def _fire_http(self):
-        # HTTP 纯发包（不等待返回体，发完即算）
+        start_time = time.time()
         headers = {"User-Agent": random.choice(self.user_agents)}
+        length = 0
         try:
             import requests
-            # 极短超时，只管把包送出去，不管回不回
-            requests.get(self.host, headers=headers, timeout=0.5)
-            self._record(True)
+            # 使用 GET 发包，0.5秒即时断开
+            resp = requests.get(self.host, headers=headers, timeout=0.5)
+            length = len(resp.content)
         except Exception:
-            # 纯发包模式下，经常因为系统掐断或超时抛异常，这里直接忽略计为发包动作
-            self._record(True)
+            pass # 纯发包模式忽略连接终止或报错
+        finally:
+            # 无论目标服务有没有正常响应，只要完成了发包均计入吞吐总量
+            self._record("HTTP", "http_pure_send", start_time, length)
 
     def _fire_tcp(self):
-        # TCP 纯发包：连上、塞数据、立刻断开（不管对方回应）
+        start_time = time.time()
+        payload = random.choice(self.user_agents).encode('utf-8')
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(1.0)
+            s.settimeout(0.5)
             s.connect((self.target_ip, self.target_port))
-            payload = random.choice(self.user_agents).encode('utf-8')
             s.sendall(payload)
             s.close()
-            self._record(True)
         except Exception:
-            self._record(True)
+            pass
+        finally:
+            self._record("TCP", "tcp_pure_send", start_time, len(payload))
 
     def _fire_udp(self):
-        # UDP 纯发包：无脑往外甩数据报
+        start_time = time.time()
+        payload = random.choice(self.user_agents).encode('utf-8')
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            payload = random.choice(self.user_agents).encode('utf-8')
             s.sendto(payload, (self.target_ip, self.target_port))
             s.close()
-            self._record(True)
         except Exception:
-            self._record(True)
+            pass
+        finally:
+            self._record("UDP", "udp_pure_send", start_time, len(payload))
