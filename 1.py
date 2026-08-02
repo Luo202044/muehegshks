@@ -4,6 +4,8 @@ import random
 import os
 import time
 import threading
+import contextlib
+from urllib.parse import urlparse
 try:
     import psutil
 except ImportError:
@@ -28,11 +30,28 @@ class PureSendUser(User):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.protocol = os.getenv("PROTOCOL", "http").lower()
-        
-        host_clean = self.host.replace("http://", "").replace("https://", "")
-        host_parts = host_clean.split(":")
-        self.target_ip = host_parts[0]
-        self.target_port = int(host_parts[1]) if len(host_parts) > 1 else (80 if self.protocol == "http" else 9000)
+
+        # 解析 host，兼容带或不带 scheme 的 host 值，剥离 path
+        raw_host = (self.host or "").strip()
+        if not raw_host:
+            self.target_ip = None
+            self.target_port = None
+            return
+
+        # 如果没有 scheme，urlparse 需要以 '//' 前缀来正确解析 hostname 和 port
+        if not raw_host.startswith(("http://", "https://")):
+            parsed = urlparse("//" + raw_host)
+        else:
+            parsed = urlparse(raw_host)
+
+        # hostname/port 可能为 None（比如只有路径），回退到简单切分以尽量兼容旧配置
+        hostname = parsed.hostname or raw_host.split(":")[0]
+        port = parsed.port
+
+        default_port = 80 if self.protocol == "http" else 9000
+
+        self.target_ip = hostname
+        self.target_port = int(port) if port else default_port
 
     @classmethod
     def setup_stats_logger(cls):
@@ -101,25 +120,47 @@ class PureSendUser(User):
     def _fire_tcp(self):
         start_time = time.time()
         payload = random.choice(self.user_agents).encode('utf-8')
+        length = len(payload)
+
+        # 如果没有解析到 target_ip/port，直接记录并返回
+        if not self.target_ip or not self.target_port:
+            self._record("TCP", "tcp_pure_send", start_time, length)
+            return
+
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(0.5)
-            s.connect((self.target_ip, self.target_port))
-            s.sendall(payload)
-            s.close()
+            # 使用 create_connection 更稳健地处理 DNS 与 timeout，并用 contextlib.closing 确保关闭
+            with contextlib.closing(socket.create_connection((self.target_ip, self.target_port), timeout=0.5)) as s:
+                try:
+                    s.sendall(payload)
+                except Exception:
+                    # 发送可能失败，但我们仍然把这次发包计入统计
+                    pass
         except Exception:
+            # 连接建立失败或超时，忽略（纯发包模式）
             pass
         finally:
-            self._record("TCP", "tcp_pure_send", start_time, len(payload))
+            self._record("TCP", "tcp_pure_send", start_time, length)
 
     def _fire_udp(self):
         start_time = time.time()
         payload = random.choice(self.user_agents).encode('utf-8')
+        length = len(payload)
+
+        if not self.target_ip or not self.target_port:
+            self._record("UDP", "udp_pure_send", start_time, length)
+            return
+
+        s = None
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.5)
             s.sendto(payload, (self.target_ip, self.target_port))
-            s.close()
         except Exception:
             pass
         finally:
-            self._record("UDP", "udp_pure_send", start_time, len(payload))
+            try:
+                if s:
+                    s.close()
+            except Exception:
+                pass
+            self._record("UDP", "udp_pure_send", start_time, length)
