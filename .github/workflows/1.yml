@@ -64,8 +64,6 @@ jobs:
       - name: Fire Requests - Shard ${{ matrix.shard }}
         run: |
           # 计算总请求数 = 并发数 * 时间(秒)
-          CONCURRENT=${{ github.event.inputs.threads_per_shard }}
-          MINUTES=${{ github.event.inputs.run_time_minutes }}
-          TOTAL=$(( CONCURRENT * MINUTES * 60 ))
+          SECONDS=$(( ${{ github.event.inputs.run_time_minutes }} * 60 ))
           # 第4个参数：协议类型
-          python -u 1.py "${{ github.event.inputs.target_url }}" "${{ github.event.inputs.threads_per_shard }}" "$TOTAL" "${{ github.event.inputs.protocol_type }}"
+          python -u 1.py "${{ github.event.inputs.target_url }}" "${{ github.event.inputs.threads_per_shard }}" "$SECONDS" "${{ github.event.inputs.protocol_type }}"
