@@ -17,7 +17,7 @@ on:
           - tcp
           - udp
       threads_per_shard:
-        description: '3. 每个分片的请求线程数'
+        description: '3. 每个分片的并发数'
         required: true
         default: '100'
       shard_count:
@@ -59,18 +59,11 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        # 补充安装了 psutil 库，以支持每分钟控制台打印 CPU/内存资源占用
-        run: pip install locust==2.32.2 requests psutil
+        run: pip install aiohttp
 
       - name: Fire Requests - Shard ${{ matrix.shard }}
         run: |
-          # 将 GitHub 选项卡中选择的协议通过环境变量传递给 python 脚本
-          export PROTOCOL="${{ github.event.inputs.protocol_type }}"
-          
-          # 启动 Locust 压测/保活任务，到达指定时间后会平稳自动结束并返回正常退出码 (0)
-          locust -f 1.py \
-            --headless \
-            -u ${{ github.event.inputs.threads_per_shard }} \
-            -r ${{ github.event.inputs.threads_per_shard }} \
-            --run-time ${{ github.event.inputs.run_time_minutes }}m \
-            --host "${{ github.event.inputs.target_url }}"
+          # 计算总请求数 = 并发数 * 时间(秒)
+          TOTAL=$(( ${{ github.event.inputs.threads_per_shard }} * ${{ github.event.inputs.run_time_minutes }} * 60 ))
+          # 第4个参数：协议类型
+          python 1.py "${{ github.event.inputs.target_url }}" "${{ github.event.inputs.threads_per_shard }}" "$TOTAL" "${{ github.event.inputs.protocol_type }}"
